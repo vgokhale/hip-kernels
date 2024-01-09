@@ -5,11 +5,12 @@
 #include <stdlib.h>
 #include<iostream>
 #include "hip/hip_runtime.h"
+#include <chrono>
 
 #define HIP_ASSERT(x) (assert((x)==hipSuccess))
 
 #define N 110*256
-#define ITER 102400
+#define ITER 10240000
 
 __global__ void shared_atomic_add(float *a, float *b, float offset)
 {
@@ -23,17 +24,22 @@ __global__ void shared_atomic_add(float *a, float *b, float offset)
     b[id] = block[tid];
 }
 
+// Main program
 int main()
 {
+    // Number of bytes to allocate for N doubles
     size_t bytes = N*sizeof(float);
 
+    // Allocate memory for arrays A, B, and C on host
     float *A = (float*)malloc(bytes);
     float *B = (float*)malloc(bytes);
 
+    // Allocate memory for arrays d_A, d_B, and d_C on device
     float *d_A, *d_B;
     HIP_ASSERT( hipMalloc(&d_A, bytes) );
     HIP_ASSERT( hipMalloc(&d_B, bytes) );
 
+    // Fill host arrays A and B
     std::random_device rand;
     std::mt19937 mt(rand());
     std::uniform_real_distribution<> dist(0, 10);
@@ -45,25 +51,35 @@ int main()
         B[i] = 0.0;
     }
 
+    // Copy data from host arrays A and B to device arrays d_A and d_B
     HIP_ASSERT( hipMemcpy(d_A, A, bytes, hipMemcpyHostToDevice) );
     HIP_ASSERT( hipMemcpy(d_B, B, bytes, hipMemcpyHostToDevice) );
 
-    // This is sized for MI250X - 110 CUs, 4 waves per WG x 64 threads per wave.
     int thr_per_blk = 256;
     int blk_in_grid = 110;
 
+    // Launch kernel
+    auto start = std::chrono::steady_clock::now();
     hipLaunchKernelGGL(shared_atomic_add, blk_in_grid, thr_per_blk , 0, 0, d_A, d_B, offset);
+    hipDeviceSynchronize();
+    auto stop = std::chrono::steady_clock::now();
+    double elapsed_seconds = std::chrono::duration_cast<
+                             std::chrono::duration<double>>(stop - start).count();
+    printf("Time = %f\n", elapsed_seconds);
 
+    // Check for errors in kernel launch (e.g. invalid execution configuration paramters)
     //hipError_t hipErrSync  = hipGetLastError();
 
+    //// Check for errors on the GPU after control is returned to CPU
     //hipError_t hipErrAsync = hipDeviceSynchronize();
 
     //if (hipErrSync != hipSuccess) { printf("Error - %s:%d: '%s'\n", __FILE__, __LINE__, hipGetErrorString(hipErrSync)); exit(0); }
     //if (hipErrAsync != hipSuccess) { printf("Error - %s:%d: '%s'\n", __FILE__, __LINE__, hipGetErrorString(hipErrAsync)); exit(0); }
 
+    // Copy data from device array d_C to host array C
     HIP_ASSERT( hipMemcpy(B, d_B, bytes, hipMemcpyDeviceToHost) );
 
-    // Check results
+    // Verify results
     //for(int i=1; i<N; i++)
     //{
     //    if(fabs(B[i] - (A[i] + ITER*offset)) > 1.0) {
@@ -74,13 +90,17 @@ int main()
     //}
     // printf("offset = %f\n", offset);
 
+    // Free CPU memory
     //free(A);
     //free(B);
 
+    // Free GPU memory
     HIP_ASSERT( hipFree(d_A) );
     HIP_ASSERT( hipFree(d_B) );
 
-//    printf("Done!\n");
+//    printf("\n---------------------------\n");
+//    printf("__SUCCESS__\n");
+//    printf("---------------------------\n");
 
     return 0;
 }
